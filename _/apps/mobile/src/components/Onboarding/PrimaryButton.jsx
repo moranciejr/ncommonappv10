@@ -1,0 +1,31 @@
+import { Text, TouchableOpacity } from "react-native";
+import { lightTheme } from "@/utils/theme";
+
+const { colors, radius, shadow, typography } = lightTheme;
+
+export function PrimaryButton({ title, onPress, disabled }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled}
+      style={{
+        backgroundColor: colors.primary,
+        paddingVertical: 14,
+        borderRadius: radius.md,
+        alignItems: "center",
+        opacity: disabled ? 0.6 : 1,
+        ...shadow.card,
+      }}
+    >
+      <Text
+        style={{
+          color: colors.primaryText,
+          ...typography.label.lg,
+          fontWeight: "700",
+        }}
+      >
+        {title}
+      </Text>
+    </TouchableOpacity>
+  );
+}

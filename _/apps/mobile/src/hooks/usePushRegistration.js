@@ -1,0 +1,304 @@
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Platform } from "react-native";
+import { useRouter } from "expo-router";
+import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
+import authedFetch from "@/utils/authedFetch";
+import { readResponseBody, getErrorMessageFromBody } from "@/utils/http";
+import { useMe } from "@/hooks/useMe";
+import { trackEvent } from "@/utils/analytics";
+
+const STORAGE_KEY = "push:lastRegisteredToken";
+
+async function safeGetItem(key) {
+  try {
+    return await AsyncStorage.getItem(key);
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function safeSetItem(key, value) {
+  try {
+    await AsyncStorage.setItem(key, value);
+  } catch (_err) {
+    // ignore
+  }
+}
+
+async function ensureAndroidChannel() {
+  if (Platform.OS !== "android") {
+    return;
+  }
+
+  try {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#FF231F7C",
+    });
+  } catch (err) {
+    console.error("Failed to set Android notification channel", err);
+  }
+}
+
+async function getExpoPushToken() {
+  const perm = await Notifications.getPermissionsAsync();
+  let status = perm?.status;
+
+  if (status !== "granted") {
+    const req = await Notifications.requestPermissionsAsync();
+    status = req?.status;
+  }
+
+  if (status !== "granted") {
+    return { token: null, status };
+  }
+
+  // Some builds require projectId; keep it best-effort.
+  const projectId =
+    Constants?.expoConfig?.extra?.eas?.projectId ||
+    Constants?.easConfig?.projectId ||
+    null;
+
+  const resp = projectId
+    ? await Notifications.getExpoPushTokenAsync({ projectId })
+    : await Notifications.getExpoPushTokenAsync();
+
+  const token = resp?.data ? String(resp.data) : null;
+  return { token, status: "granted" };
+}
+
+async function registerWithBackend({ token, platform }) {
+  const response = await authedFetch("/api/push/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, platform }),
+  });
+
+  const data = await readResponseBody(response);
+  if (!response.ok) {
+    const msg = getErrorMessageFromBody(data, response);
+    throw new Error(
+      `When fetching /api/push/register, the response was [${response.status}] ${msg}`,
+    );
+  }
+
+  return data;
+}
+
+export function usePushRegistration({ enabled }) {
+  const router = useRouter();
+  const { meQuery } = useMe();
+
+  const userId = meQuery.data?.user?.id || null;
+
+  // Avoid hammering permissions on every render.
+  const didAttemptRef = useRef(false);
+
+  // If the signed-in user changes, allow a new registration attempt.
+  useEffect(() => {
+    didAttemptRef.current = false;
+  }, [userId]);
+
+  const isMobilePlatform = Platform.OS === "ios" || Platform.OS === "android";
+  const shouldRun = !!enabled && isMobilePlatform && meQuery.isSuccess;
+
+  const platform = useMemo(() => {
+    if (Platform.OS === "ios") {
+      return "ios";
+    }
+    if (Platform.OS === "android") {
+      return "android";
+    }
+    return null;
+  }, []);
+
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    // Ensure notifications show while app is open.
+    try {
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+        }),
+      });
+    } catch (_err) {
+      // ignore
+    }
+  }, []);
+
+  const handleOpenFromNotification = useCallback(
+    (response) => {
+      const data = response?.notification?.request?.content?.data;
+      if (!data || typeof data !== "object") {
+        return;
+      }
+
+      const type = typeof data.type === "string" ? data.type : "";
+
+      const parseNumericId = (value) => {
+        if (typeof value === "number") {
+          return Number.isFinite(value) ? value : null;
+        }
+        const n = parseInt(String(value || ""), 10);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      // Fire-and-forget analytics for tap-through.
+      try {
+        const conversationId = parseNumericId(data.conversationId);
+        const checkinId = parseNumericId(data.checkinId);
+        const requestId = parseNumericId(data.requestId);
+        const status = typeof data.status === "string" ? data.status : "";
+
+        trackEvent("push_opened", {
+          type,
+          conversationId,
+          checkinId,
+          requestId,
+          status: status || null,
+        }).catch(() => null);
+      } catch (_err) {
+        // ignore
+      }
+
+      if (type === "message") {
+        const id = parseNumericId(data.conversationId);
+        if (id && id > 0) {
+          router.push(`/messages/${id}`);
+        }
+        return;
+      }
+
+      if (type === "checkin_request") {
+        const checkinId = parseNumericId(data.checkinId);
+        const requestId = parseNumericId(data.requestId);
+        if (!checkinId) {
+          return;
+        }
+
+        const navParams = { tab: "requests" };
+        if (requestId) {
+          navParams.requestId = String(requestId);
+        }
+
+        router.push({
+          pathname: `/plans/${checkinId}`,
+          params: navParams,
+        });
+        return;
+      }
+
+      if (type === "checkin_request_update") {
+        const status = typeof data.status === "string" ? data.status : "";
+        const conversationId = parseNumericId(data.conversationId);
+        const checkinId = parseNumericId(data.checkinId);
+
+        if (status === "accepted" && conversationId) {
+          router.push(`/messages/${conversationId}`);
+          return;
+        }
+
+        if (checkinId) {
+          router.push(`/plans/${checkinId}`);
+        }
+        return;
+      }
+
+      if (type === "nearby_plan_starting_soon") {
+        const checkinId = parseNumericId(data.checkinId);
+        if (checkinId) {
+          router.push(`/plans/${checkinId}`);
+        }
+      }
+    },
+    [router],
+  );
+
+  useEffect(() => {
+    if (!shouldRun) {
+      return;
+    }
+
+    // 1) If the app was opened by tapping a notification, navigate.
+    // 2) Also listen for future taps while the app is running.
+    let sub = null;
+
+    (async () => {
+      try {
+        const last = await Notifications.getLastNotificationResponseAsync();
+        if (last) {
+          handleOpenFromNotification(last);
+        }
+      } catch (err) {
+        console.error("Failed reading last notification response", err);
+      }
+    })();
+
+    try {
+      sub = Notifications.addNotificationResponseReceivedListener((resp) => {
+        handleOpenFromNotification(resp);
+      });
+    } catch (err) {
+      console.error("Failed adding notification response listener", err);
+    }
+
+    return () => {
+      try {
+        sub?.remove?.();
+      } catch (_err) {
+        // ignore
+      }
+    };
+  }, [handleOpenFromNotification, shouldRun]);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!shouldRun) {
+        return;
+      }
+      if (didAttemptRef.current) {
+        return;
+      }
+      didAttemptRef.current = true;
+
+      try {
+        setError(null);
+        await ensureAndroidChannel();
+
+        const { token } = await getExpoPushToken();
+        if (!token || !platform) {
+          return;
+        }
+
+        const last = await safeGetItem(STORAGE_KEY);
+        if (last && last === token) {
+          // Still refresh lastSeen on the server (cheap).
+          await registerWithBackend({ token, platform });
+          return;
+        }
+
+        await registerWithBackend({ token, platform });
+        await safeSetItem(STORAGE_KEY, token);
+      } catch (err) {
+        console.error("Push registration failed", err);
+        setError("Could not enable push notifications");
+      }
+    };
+
+    run();
+  }, [platform, shouldRun]);
+
+  return {
+    meQuery,
+    error,
+  };
+}
+
+export default usePushRegistration;

@@ -1,6 +1,7 @@
 {
   "buildCommand": "bun run build",
   "outputDirectory": "build/client",
+  "framework": "vite",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ]

@@ -1,7 +1,3 @@
-/**
- * Returns the subscription tier for a user.
- * For now defaults to 'free' — wire up billing later.
- */
 export async function getTierForSessionEmail(email) {
   return 'free';
 }
@@ -16,4 +12,15 @@ export async function getTierForUserId(sql, userId) {
   } catch {
     return 'free';
   }
+}
+
+export function normalizeTier(tier) {
+  if (tier === 'plus' || tier === 'premium') return tier;
+  return 'free';
+}
+
+export function tierFromSubscriptionStatus(status) {
+  if (!status) return 'free';
+  if (status === 'active' || status === 'trialing') return 'plus';
+  return 'free';
 }

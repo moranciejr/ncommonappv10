@@ -1,7 +1,3 @@
-/**
- * Returns a SQL clause that filters out blocked user pairs.
- * Usage: embed in a WHERE clause.
- */
 export function blockPairNotExistsClause({ viewerUserIdSql, otherUserIdColumnSql }) {
   return `
     NOT EXISTS (
@@ -13,4 +9,15 @@ export function blockPairNotExistsClause({ viewerUserIdSql, otherUserIdColumnSql
       )
     )
   `;
+}
+
+export async function isBlockedPair(sql, userIdA, userIdB) {
+  const rows = await sql(
+    `SELECT 1 FROM user_blocks
+     WHERE (blocker_user_id = $1 AND blocked_user_id = $2)
+        OR (blocker_user_id = $2 AND blocked_user_id = $1)
+     LIMIT 1`,
+    [userIdA, userIdB]
+  );
+  return (rows?.length || 0) > 0;
 }

@@ -16,6 +16,10 @@ export async function getSubscriptionStatus({ userId }) {
   return { tier: 'free', status: 'inactive' };
 }
 
+export async function getActiveTierForCustomer({ customerId, email }) {
+  return 'free';
+}
+
 export async function cancelSubscription({ subscriptionId }) {
   throw new Error('Stripe not configured');
 }
@@ -26,4 +30,16 @@ export async function handleWebhook({ payload, signature }) {
 
 export async function claimPromoCode({ userId, code }) {
   throw new Error('Stripe not configured');
+}
+
+export async function getCustomerPortalUrl({ customerId, returnUrl }) {
+  throw new Error('Stripe not configured');
+}
+
+export async function createSubscription({ customerId, priceId }) {
+  throw new Error('Stripe not configured');
+}
+
+export async function getSubscriptionForUser({ userId }) {
+  return null;
 }
